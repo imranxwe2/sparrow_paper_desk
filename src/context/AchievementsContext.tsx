@@ -9,7 +9,13 @@ import {
   useState,
 } from 'react'
 import { ACHIEVEMENT_BY_ID, type AchievementId } from '../lib/achievementCatalog'
-import { loadAchievementState, saveAchievementState, type PersistedAchievementState } from '../lib/achievementStorage'
+import {
+  defaultAchievementState,
+  loadAchievementState,
+  resetPersistedAchievementState,
+  saveAchievementState,
+  type PersistedAchievementState,
+} from '../lib/achievementStorage'
 import { SYMBOLS } from '../lib/mockMarket'
 import type { PaperSnapshot } from './PaperTradingContext'
 import { usePaper } from './PaperTradingContext'
@@ -155,6 +161,8 @@ type AchievementsCtx = {
   }
   lastUnlock: UnlockToast
   clearLastUnlock: () => void
+  /** Clears unlocks and progress in memory and localStorage. */
+  resetAchievementProgress: () => void
 }
 
 const AchCtx = createContext<AchievementsCtx | null>(null)
@@ -181,6 +189,13 @@ export function AchievementsProvider({ children }: { children: ReactNode }) {
 
   const clearLastUnlock = useCallback(() => setLastUnlock(null), [])
 
+  const resetAchievementProgress = useCallback(() => {
+    const next = defaultAchievementState()
+    resetPersistedAchievementState()
+    setInternal(next)
+    setLastUnlock(null)
+  }, [])
+
   const progress = useMemo(() => {
     const diamondMax = Math.max(0, ...SYMBOLS.map((s) => internal.holdStreakBySymbol[s.symbol] ?? 0))
     return {
@@ -196,8 +211,9 @@ export function AchievementsProvider({ children }: { children: ReactNode }) {
       progress,
       lastUnlock,
       clearLastUnlock,
+      resetAchievementProgress,
     }),
-    [internal, progress, lastUnlock, clearLastUnlock],
+    [internal, progress, lastUnlock, clearLastUnlock, resetAchievementProgress],
   )
 
   return <AchCtx.Provider value={value}>{children}</AchCtx.Provider>

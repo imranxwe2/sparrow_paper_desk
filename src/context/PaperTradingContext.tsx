@@ -6,12 +6,18 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useReducer,
+  useRef,
   useState,
 } from 'react'
-import { pricesAtTick } from '../lib/mockMarket'
+import { quoteBookAtTick, SYMBOLS } from '../lib/mockMarket'
+import { buyFeeForOrder, sellFeeForOrder } from '../lib/paperFees'
 import { loadPaperRaw, savePaperRaw } from '../lib/storage'
 
 const START_CASH = 100_000
+
+const round2 = (n: number) => Math.round(n * 100) / 100
+const round4 = (n: number) => Math.round(n * 10000) / 10000
 
 export type Position = { qty: number; avgCost: number }
 
@@ -23,8 +29,20 @@ export type LedgerRow = {
   qty: number
   price: number
   total: number
+  fees?: number
   /** Present on SELL rows: average cost of shares sold (for P&L / achievements) */
   avgCostAtSell?: number
+}
+
+export type OpenOrder = {
+  id: string
+  t: number
+  side: 'BUY' | 'SELL'
+  symbol: string
+  qty: number
+  limitPrice: number
+  /** Escrow for BUY limits (released on fill or cancel). SELL limits use 0. */
+  reservedCash: number
 }
 
 export type PaperSnapshot = {
@@ -32,6 +50,16 @@ export type PaperSnapshot = {
   positions: Record<string, Position>
   ledger: LedgerRow[]
   lastPrices: Record<string, number>
+  bidPrices: Record<string, number>
+  askPrices: Record<string, number>
+  openOrders: OpenOrder[]
+}
+
+type PaperCore = {
+  cash: number
+  positions: Record<string, Position>
+  ledger: LedgerRow[]
+  openOrders: OpenOrder[]
 }
 
 type Ctx = {
@@ -39,6 +67,17 @@ type Ctx = {
   snapshot: PaperSnapshot
   buy: (symbol: string, qty: number) => { ok: true } | { ok: false; reason: string }
   sell: (symbol: string, qty: number) => { ok: true } | { ok: false; reason: string }
+  placeLimitBuy: (
+    symbol: string,
+    qty: number,
+    limitPrice: number,
+  ) => { ok: true } | { ok: false; reason: string }
+  placeLimitSell: (
+    symbol: string,
+    qty: number,
+    limitPrice: number,
+  ) => { ok: true } | { ok: false; reason: string }
+  cancelOpenOrder: (id: string) => { ok: true } | { ok: false; reason: string }
   resetPaper: () => void
 }
 
@@ -48,152 +87,440 @@ function uid(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
 }
 
-function defaultState(): Omit<PaperSnapshot, 'lastPrices'> {
+function defaultCore(): PaperCore {
   return {
     cash: START_CASH,
     positions: {},
     ledger: [],
+    openOrders: [],
   }
 }
 
-function parseStored(raw: string | null): Omit<PaperSnapshot, 'lastPrices'> | null {
+function parseStored(raw: string | null): PaperCore | null {
   if (!raw) return null
   try {
-    const o = JSON.parse(raw) as Omit<PaperSnapshot, 'lastPrices'>
-    if (typeof o.cash !== 'number' || typeof o.positions !== 'object') return null
+    const o = JSON.parse(raw) as {
+      cash: unknown
+      positions: unknown
+      ledger: unknown
+      openOrders?: unknown
+    }
+    if (typeof o.cash !== 'number' || typeof o.positions !== 'object' || o.positions === null) return null
+    const ledger = Array.isArray(o.ledger) ? (o.ledger as LedgerRow[]) : []
+    const openOrders = Array.isArray(o.openOrders) ? (o.openOrders as OpenOrder[]) : []
     return {
       cash: o.cash,
-      positions: o.positions,
-      ledger: Array.isArray(o.ledger) ? o.ledger : [],
+      positions: o.positions as Record<string, Position>,
+      ledger,
+      openOrders,
     }
   } catch {
     return null
   }
 }
 
-let initialPaperCache: Omit<PaperSnapshot, 'lastPrices'> | undefined
-function initialPaper(): Omit<PaperSnapshot, 'lastPrices'> {
-  if (!initialPaperCache) {
-    initialPaperCache = parseStored(loadPaperRaw()) ?? defaultState()
+let initialCoreCache: PaperCore | undefined
+function initialCore(): PaperCore {
+  if (!initialCoreCache) {
+    initialCoreCache = parseStored(loadPaperRaw()) ?? defaultCore()
   }
-  return initialPaperCache
+  return initialCoreCache
+}
+
+function openSellQtyForSymbol(state: PaperCore, symbol: string): number {
+  return state.openOrders
+    .filter((x) => x.side === 'SELL' && x.symbol === symbol)
+    .reduce((a, x) => a + x.qty, 0)
+}
+
+function mergeBuyPosition(
+  prev: Record<string, Position>,
+  symbol: string,
+  qty: number,
+  price: number,
+): Record<string, Position> {
+  const cur = prev[symbol] ?? { qty: 0, avgCost: 0 }
+  const newQty = cur.qty + qty
+  const newAvg =
+    newQty === 0 ? 0 : round4((cur.avgCost * cur.qty + price * qty) / newQty)
+  return { ...prev, [symbol]: { qty: newQty, avgCost: newAvg } }
+}
+
+function applySellPosition(
+  prev: Record<string, Position>,
+  symbol: string,
+  qty: number,
+): Record<string, Position> {
+  const holding = prev[symbol]
+  if (!holding) return prev
+  const nextQty = holding.qty - qty
+  if (nextQty <= 0) {
+    const rest = { ...prev }
+    delete rest[symbol]
+    return rest
+  }
+  return { ...prev, [symbol]: { qty: nextQty, avgCost: holding.avgCost } }
+}
+
+type Action =
+  | { type: 'marketBuy'; symbol: string; qty: number; ask: number }
+  | { type: 'marketSell'; symbol: string; qty: number; bid: number }
+  | { type: 'placeLimitBuy'; symbol: string; qty: number; limitPrice: number }
+  | { type: 'placeLimitSell'; symbol: string; qty: number; limitPrice: number }
+  | { type: 'cancelOrder'; id: string }
+  | { type: 'processTickFills'; tick: number }
+  | { type: 'reset' }
+
+function applyLimitBuyFill(state: PaperCore, o: OpenOrder, ask: number): PaperCore {
+  const q = o.qty
+  const fee = buyFeeForOrder(q)
+  const gross = round2(ask * q)
+  const totalCost = round2(gross + fee)
+  const cash = round2(state.cash + o.reservedCash - totalCost)
+  const positions = mergeBuyPosition(state.positions, o.symbol, q, ask)
+  const ledgerRow: LedgerRow = {
+    id: uid(),
+    t: Date.now(),
+    side: 'BUY',
+    symbol: o.symbol,
+    qty: q,
+    price: ask,
+    total: gross,
+    fees: fee > 0 ? fee : undefined,
+  }
+  return {
+    cash,
+    positions,
+    ledger: [ledgerRow, ...state.ledger],
+    openOrders: state.openOrders.filter((x) => x.id !== o.id),
+  }
+}
+
+function applyLimitSellFill(state: PaperCore, o: OpenOrder, bid: number): PaperCore {
+  const q = o.qty
+  const cur = state.positions[o.symbol]
+  if (!cur || cur.qty < q) return state
+  const fee = sellFeeForOrder(q)
+  const gross = round2(bid * q)
+  const netCredit = round2(gross - fee)
+  const cash = round2(state.cash + netCredit)
+  const positions = applySellPosition(state.positions, o.symbol, q)
+  const ledgerRow: LedgerRow = {
+    id: uid(),
+    t: Date.now(),
+    side: 'SELL',
+    symbol: o.symbol,
+    qty: q,
+    price: bid,
+    total: gross,
+    fees: fee > 0 ? fee : undefined,
+    avgCostAtSell: cur.avgCost,
+  }
+  return {
+    cash,
+    positions,
+    ledger: [ledgerRow, ...state.ledger],
+    openOrders: state.openOrders.filter((x) => x.id !== o.id),
+  }
+}
+
+function paperReducer(state: PaperCore, action: Action): PaperCore {
+  switch (action.type) {
+    case 'reset':
+      return defaultCore()
+    case 'marketBuy': {
+      const q = Math.floor(action.qty)
+      if (q <= 0) return state
+      const ask = action.ask
+      const fee = buyFeeForOrder(q)
+      const gross = round2(ask * q)
+      const total = round2(gross + fee)
+      if (total > state.cash + 1e-9) return state
+      return {
+        cash: round2(state.cash - total),
+        positions: mergeBuyPosition(state.positions, action.symbol, q, ask),
+        ledger: [
+          {
+            id: uid(),
+            t: Date.now(),
+            side: 'BUY',
+            symbol: action.symbol,
+            qty: q,
+            price: ask,
+            total: gross,
+            fees: fee > 0 ? fee : undefined,
+          },
+          ...state.ledger,
+        ],
+        openOrders: state.openOrders,
+      }
+    }
+    case 'marketSell': {
+      const q = Math.floor(action.qty)
+      if (q <= 0) return state
+      const bid = action.bid
+      const cur = state.positions[action.symbol]
+      const avail = (cur?.qty ?? 0) - openSellQtyForSymbol(state, action.symbol)
+      if (!cur || avail < q) return state
+      const fee = sellFeeForOrder(q)
+      const gross = round2(bid * q)
+      const netCredit = round2(gross - fee)
+      return {
+        cash: round2(state.cash + netCredit),
+        positions: applySellPosition(state.positions, action.symbol, q),
+        ledger: [
+          {
+            id: uid(),
+            t: Date.now(),
+            side: 'SELL',
+            symbol: action.symbol,
+            qty: q,
+            price: bid,
+            total: gross,
+            fees: fee > 0 ? fee : undefined,
+            avgCostAtSell: cur.avgCost,
+          },
+          ...state.ledger,
+        ],
+        openOrders: state.openOrders,
+      }
+    }
+    case 'placeLimitBuy': {
+      const q = Math.floor(action.qty)
+      const lim = round2(action.limitPrice)
+      if (q <= 0 || lim <= 0) return state
+      const escrow = round2(lim * q)
+      if (escrow > state.cash + 1e-9) return state
+      const order: OpenOrder = {
+        id: uid(),
+        t: Date.now(),
+        side: 'BUY',
+        symbol: action.symbol,
+        qty: q,
+        limitPrice: lim,
+        reservedCash: escrow,
+      }
+      return {
+        ...state,
+        cash: round2(state.cash - escrow),
+        openOrders: [order, ...state.openOrders],
+      }
+    }
+    case 'placeLimitSell': {
+      const q = Math.floor(action.qty)
+      const lim = round2(action.limitPrice)
+      if (q <= 0 || lim <= 0) return state
+      const cur = state.positions[action.symbol]
+      const locked = openSellQtyForSymbol(state, action.symbol)
+      const avail = (cur?.qty ?? 0) - locked
+      if (!cur || avail < q) return state
+      const order: OpenOrder = {
+        id: uid(),
+        t: Date.now(),
+        side: 'SELL',
+        symbol: action.symbol,
+        qty: q,
+        limitPrice: lim,
+        reservedCash: 0,
+      }
+      return {
+        ...state,
+        openOrders: [order, ...state.openOrders],
+      }
+    }
+    case 'cancelOrder': {
+      const o = state.openOrders.find((x) => x.id === action.id)
+      if (!o) return state
+      if (o.side === 'BUY') {
+        return {
+          ...state,
+          cash: round2(state.cash + o.reservedCash),
+          openOrders: state.openOrders.filter((x) => x.id !== action.id),
+        }
+      }
+      return {
+        ...state,
+        openOrders: state.openOrders.filter((x) => x.id !== action.id),
+      }
+    }
+    case 'processTickFills': {
+      const book = quoteBookAtTick(action.tick)
+      const sorted = [...state.openOrders].sort((a, b) => a.t - b.t)
+      let next = state
+      const filledIds = new Set<string>()
+      for (const o of sorted) {
+        if (filledIds.has(o.id)) continue
+        const q = book[o.symbol]
+        if (o.side === 'BUY' && q != null && q.ask <= o.limitPrice + 1e-9) {
+          const beforeLedger = next.ledger.length
+          next = applyLimitBuyFill(next, o, q.ask)
+          if (next.ledger.length > beforeLedger) filledIds.add(o.id)
+        } else if (o.side === 'SELL' && q != null && q.bid >= o.limitPrice - 1e-9) {
+          const beforeLedger = next.ledger.length
+          next = applyLimitSellFill(next, o, q.bid)
+          if (next.ledger.length > beforeLedger) filledIds.add(o.id)
+        }
+      }
+      if (filledIds.size === 0) return state
+      const remaining = state.openOrders.filter((o) => !filledIds.has(o.id))
+      return { ...next, openOrders: remaining }
+    }
+    default:
+      return state
+  }
 }
 
 export function PaperTradingProvider({ children }: { children: ReactNode }) {
   const [tick, setTick] = useState(0)
-  const [cash, setCash] = useState(() => initialPaper().cash)
-  const [positions, setPositions] = useState(() => initialPaper().positions)
-  const [ledger, setLedger] = useState(() => initialPaper().ledger)
+  const [core, dispatch] = useReducer(paperReducer, undefined, initialCore)
+  const lastFillTickRef = useRef<number | null>(null)
 
   useEffect(() => {
     const id = window.setInterval(() => setTick((t) => t + 1), 4000)
     return () => window.clearInterval(id)
   }, [])
 
-  const lastPrices = useMemo(() => pricesAtTick(tick), [tick])
+  const quoteBook = useMemo(() => quoteBookAtTick(tick), [tick])
+
+  const lastPrices = useMemo(() => {
+    const o: Record<string, number> = {}
+    for (const s of SYMBOLS) {
+      o[s.symbol] = quoteBook[s.symbol]?.last ?? 0
+    }
+    return o
+  }, [quoteBook])
+
+  const bidPrices = useMemo(() => {
+    const o: Record<string, number> = {}
+    for (const s of SYMBOLS) {
+      o[s.symbol] = quoteBook[s.symbol]?.bid ?? 0
+    }
+    return o
+  }, [quoteBook])
+
+  const askPrices = useMemo(() => {
+    const o: Record<string, number> = {}
+    for (const s of SYMBOLS) {
+      o[s.symbol] = quoteBook[s.symbol]?.ask ?? 0
+    }
+    return o
+  }, [quoteBook])
 
   useEffect(() => {
-    const snap: PaperSnapshot = { cash, positions, ledger, lastPrices }
+    if (lastFillTickRef.current === tick) return
+    lastFillTickRef.current = tick
+    dispatch({ type: 'processTickFills', tick })
+  }, [tick])
+
+  useEffect(() => {
     savePaperRaw(
       JSON.stringify({
-        cash: snap.cash,
-        positions: snap.positions,
-        ledger: snap.ledger,
+        cash: core.cash,
+        positions: core.positions,
+        ledger: core.ledger,
+        openOrders: core.openOrders,
       }),
     )
-  }, [cash, positions, ledger, lastPrices])
+  }, [core.cash, core.positions, core.ledger, core.openOrders])
+
+  const snapshot: PaperSnapshot = useMemo(
+    () => ({
+      cash: core.cash,
+      positions: core.positions,
+      ledger: core.ledger,
+      lastPrices,
+      bidPrices,
+      askPrices,
+      openOrders: core.openOrders,
+    }),
+    [core, lastPrices, bidPrices, askPrices],
+  )
 
   const buy = useCallback(
     (symbol: string, qty: number): { ok: true } | { ok: false; reason: string } => {
       const q = Math.floor(qty)
       if (q <= 0) return { ok: false, reason: 'Quantity must be a positive whole number.' }
-      const price = lastPrices[symbol]
-      if (price == null) return { ok: false, reason: 'Unknown symbol.' }
-      const total = Math.round(price * q * 100) / 100
-      if (total > cash + 1e-6) return { ok: false, reason: 'Not enough paper cash for this order.' }
-
-      setCash((c) => Math.round((c - total) * 100) / 100)
-      setPositions((prev) => {
-        const cur = prev[symbol] ?? { qty: 0, avgCost: 0 }
-        const newQty = cur.qty + q
-        const newAvg =
-          newQty === 0
-            ? 0
-            : Math.round(((cur.avgCost * cur.qty + price * q) / newQty) * 10000) / 10000
-        return { ...prev, [symbol]: { qty: newQty, avgCost: newAvg } }
-      })
-      setLedger((L) => [
-        {
-          id: uid(),
-          t: Date.now(),
-          side: 'BUY',
-          symbol,
-          qty: q,
-          price,
-          total,
-        },
-        ...L,
-      ])
+      const ask = askPrices[symbol]
+      if (ask == null || ask <= 0) return { ok: false, reason: 'Unknown symbol.' }
+      const fee = buyFeeForOrder(q)
+      const gross = round2(ask * q)
+      const total = round2(gross + fee)
+      if (total > core.cash + 1e-9) return { ok: false, reason: 'Not enough paper cash for this order.' }
+      dispatch({ type: 'marketBuy', symbol, qty: q, ask })
       return { ok: true }
     },
-    [cash, lastPrices],
+    [askPrices, core.cash],
   )
 
   const sell = useCallback(
     (symbol: string, qty: number): { ok: true } | { ok: false; reason: string } => {
       const q = Math.floor(qty)
       if (q <= 0) return { ok: false, reason: 'Quantity must be a positive whole number.' }
-      const price = lastPrices[symbol]
-      if (price == null) return { ok: false, reason: 'Unknown symbol.' }
-      const cur = positions[symbol]
-      if (!cur || cur.qty < q) return { ok: false, reason: 'You do not hold enough shares to sell.' }
-
-      const total = Math.round(price * q * 100) / 100
-      setCash((c) => Math.round((c + total) * 100) / 100)
-      setPositions((prev) => {
-        const holding = prev[symbol]
-        if (!holding) return prev
-        const nextQty = holding.qty - q
-        if (nextQty <= 0) {
-          const rest = { ...prev }
-          delete rest[symbol]
-          return rest
-        }
-        return { ...prev, [symbol]: { qty: nextQty, avgCost: holding.avgCost } }
-      })
-      setLedger((L) => [
-        {
-          id: uid(),
-          t: Date.now(),
-          side: 'SELL',
-          symbol,
-          qty: q,
-          price,
-          total,
-          avgCostAtSell: cur.avgCost,
-        },
-        ...L,
-      ])
+      const bid = bidPrices[symbol]
+      if (bid == null || bid <= 0) return { ok: false, reason: 'Unknown symbol.' }
+      const cur = core.positions[symbol]
+      const avail = (cur?.qty ?? 0) - openSellQtyForSymbol(core, symbol)
+      if (!cur || avail < q) return { ok: false, reason: 'You do not hold enough shares to sell.' }
+      dispatch({ type: 'marketSell', symbol, qty: q, bid })
       return { ok: true }
     },
-    [lastPrices, positions],
+    [bidPrices, core.positions, core.openOrders],
   )
+
+  const placeLimitBuy = useCallback(
+    (symbol: string, qty: number, limitPrice: number): { ok: true } | { ok: false; reason: string } => {
+      const q = Math.floor(qty)
+      const lim = round2(limitPrice)
+      if (q <= 0) return { ok: false, reason: 'Quantity must be a positive whole number.' }
+      if (lim <= 0) return { ok: false, reason: 'Limit price must be positive.' }
+      if (askPrices[symbol] == null) return { ok: false, reason: 'Unknown symbol.' }
+      const escrow = round2(lim * q)
+      if (escrow > core.cash + 1e-9) return { ok: false, reason: 'Not enough paper cash to reserve for this limit buy.' }
+      dispatch({ type: 'placeLimitBuy', symbol, qty: q, limitPrice: lim })
+      return { ok: true }
+    },
+    [askPrices, core.cash],
+  )
+
+  const placeLimitSell = useCallback(
+    (symbol: string, qty: number, limitPrice: number): { ok: true } | { ok: false; reason: string } => {
+      const q = Math.floor(qty)
+      const lim = round2(limitPrice)
+      if (q <= 0) return { ok: false, reason: 'Quantity must be a positive whole number.' }
+      if (lim <= 0) return { ok: false, reason: 'Limit price must be positive.' }
+      const cur = core.positions[symbol]
+      const locked = openSellQtyForSymbol(core, symbol)
+      const avail = (cur?.qty ?? 0) - locked
+      if (!cur || avail < q) return { ok: false, reason: 'You do not hold enough available shares for this limit sell.' }
+      dispatch({ type: 'placeLimitSell', symbol, qty: q, limitPrice: lim })
+      return { ok: true }
+    },
+    [core.positions, core.openOrders],
+  )
+
+  const cancelOpenOrder = useCallback((id: string): { ok: true } | { ok: false; reason: string } => {
+    if (!core.openOrders.some((o) => o.id === id)) return { ok: false, reason: 'Order not found.' }
+    dispatch({ type: 'cancelOrder', id })
+    return { ok: true }
+  }, [core.openOrders])
 
   const resetPaper = useCallback(() => {
-    const d = defaultState()
-    setCash(d.cash)
-    setPositions(d.positions)
-    setLedger(d.ledger)
+    dispatch({ type: 'reset' })
+    initialCoreCache = defaultCore()
   }, [])
 
-  const snapshot: PaperSnapshot = useMemo(
-    () => ({ cash, positions, ledger, lastPrices }),
-    [cash, positions, ledger, lastPrices],
-  )
-
   const value = useMemo(
-    () => ({ tick, snapshot, buy, sell, resetPaper }),
-    [tick, snapshot, buy, sell, resetPaper],
+    () => ({
+      tick,
+      snapshot,
+      buy,
+      sell,
+      placeLimitBuy,
+      placeLimitSell,
+      cancelOpenOrder,
+      resetPaper,
+    }),
+    [tick, snapshot, buy, sell, placeLimitBuy, placeLimitSell, cancelOpenOrder, resetPaper],
   )
 
   return <PaperCtx.Provider value={value}>{children}</PaperCtx.Provider>

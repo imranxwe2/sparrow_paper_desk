@@ -52,11 +52,11 @@ export async function getAssistantReply(
   }
 
   if (/buy|long|entry/.test(msg)) {
-    return `Buying increases exposure: you pay cash and receive shares at the desk price. Consider position size versus cash, and whether you already hold the name. ${summary}`
+    return `Buying increases exposure: market buys pay the ask (plus any practice fees); limit buys reserve cash until fill or cancel. Consider size versus available cash. ${summary}`
   }
 
   if (/sell|short|exit|close/.test(msg)) {
-    return `Selling here closes long paper shares you already own; we do not simulate short selling. If you do not own the symbol, sell will not go through. ${summary}`
+    return `Selling here closes long paper shares you already own at the bid (minus a tiny mock sell fee). Limit sells cannot use shares already reserved for other open sell orders. ${summary}`
   }
 
   if (/risk|diversif|portfolio|allocat/.test(msg)) {
@@ -64,7 +64,11 @@ export async function getAssistantReply(
   }
 
   if (/pnl|profit|loss|performance/.test(msg)) {
-    return `P&L on the desk is mark-to-market using the current practice quote minus your average cost for held shares. ${summary}`
+    return `P&L on the desk is mark-to-market using the last/mid practice quote (between bid and ask) minus your average cost for held shares. ${summary}`
+  }
+
+  if (/bid|ask|spread|fee/.test(msg)) {
+    return `The quote table shows bid (where sells fill), ask (where buys fill), and last/mid for portfolio value. A small mock fee applies on sell fills so you notice friction on tiny trades. ${summary}`
   }
 
   if (/symbol|ticker|aapl|msft|goog|amzn|nvda|meta/.test(msg)) {
@@ -72,7 +76,7 @@ export async function getAssistantReply(
   }
 
   if (/limit|market|order type/.test(msg)) {
-    return `This practice app uses simple market-style fills at the shown desk price for immediacy. Real platforms offer limit and stop orders; the idea here is repetition with less friction. ${summary}`
+    return `Market orders fill immediately at the bid (sell) or ask (buy). Limit orders rest in “Working orders” until a quote tick crosses your price, then they fill like a market order at bid/ask. Cancel anytime to release reserved cash (buys) or shares (sells). ${summary}`
   }
 
   return `I can explain paper mechanics, orders, risk ideas, or read back your portfolio. Try asking: "How do I size a buy?" or "What is my exposure?" Snapshot: ${summary}`

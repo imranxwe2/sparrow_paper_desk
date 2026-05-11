@@ -62,3 +62,8 @@ export function saveAchievementState(s: PersistedAchievementState): void {
     /* ignore */
   }
 }
+
+/** Persist default empty achievement progress (fresh unlock run). */
+export function resetPersistedAchievementState(): void {
+  saveAchievementState(defaultAchievementState())
+}
