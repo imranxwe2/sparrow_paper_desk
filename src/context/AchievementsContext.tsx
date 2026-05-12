@@ -136,6 +136,10 @@ function stepAchievements(
   if (riskReserveStreak >= RISK_STREAK_NEED) unlocked.add('risk_manager')
   if (symCount >= DIVERSIFIED_NEED) unlocked.add('diversified_portfolio')
   if (greenDayKeys.length >= GREEN_DAYS_NEED) unlocked.add('ten_green_days')
+  
+  if (snapshot.ledger.some((r) => r.isLimitFill)) {
+    unlocked.add('price_setter')
+  }
 
   return {
     unlocked: Array.from(unlocked),
@@ -161,8 +165,10 @@ type AchievementsCtx = {
   }
   lastUnlock: UnlockToast
   clearLastUnlock: () => void
-  /** Clears unlocks and progress in memory and localStorage. */
   resetAchievementProgress: () => void
+  hydrateAchievements: (state: PersistedAchievementState) => void
+  unlockAchievement: (id: AchievementId) => void
+  internal: PersistedAchievementState
 }
 
 const AchCtx = createContext<AchievementsCtx | null>(null)
@@ -196,6 +202,21 @@ export function AchievementsProvider({ children }: { children: ReactNode }) {
     setLastUnlock(null)
   }, [])
 
+  const hydrateAchievements = useCallback((state: PersistedAchievementState) => {
+    setInternal(state)
+    saveAchievementState(state)
+  }, [])
+
+  const unlockAchievement = useCallback((id: AchievementId) => {
+    setInternal((prev) => {
+      if (prev.unlocked.includes(id)) return prev
+      const next = { ...prev, unlocked: [...prev.unlocked, id] }
+      saveAchievementState(next)
+      queueMicrotask(() => setLastUnlock({ id, title: ACHIEVEMENT_BY_ID[id].title }))
+      return next
+    })
+  }, [])
+
   const progress = useMemo(() => {
     const diamondMax = Math.max(0, ...SYMBOLS.map((s) => internal.holdStreakBySymbol[s.symbol] ?? 0))
     return {
@@ -212,8 +233,11 @@ export function AchievementsProvider({ children }: { children: ReactNode }) {
       lastUnlock,
       clearLastUnlock,
       resetAchievementProgress,
+      hydrateAchievements,
+      unlockAchievement,
+      internal,
     }),
-    [internal, progress, lastUnlock, clearLastUnlock, resetAchievementProgress],
+    [internal, progress, lastUnlock, clearLastUnlock, resetAchievementProgress, hydrateAchievements, unlockAchievement],
   )
 
   return <AchCtx.Provider value={value}>{children}</AchCtx.Provider>

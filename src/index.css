@@ -61,3 +61,8 @@ body {
 .toast-enter {
   animation: toast-in 0.28s ease-out both;
 }
+
+@keyframes marquee {
+  0% { transform: translateX(100vw); }
+  100% { transform: translateX(-100%); }
+}

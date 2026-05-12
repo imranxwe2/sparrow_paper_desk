@@ -4,6 +4,8 @@ export type AchievementId =
   | 'risk_manager'
   | 'diversified_portfolio'
   | 'ten_green_days'
+  | 'curious_mind'
+  | 'price_setter'
 
 export type AchievementDef = {
   id: AchievementId
@@ -49,6 +51,18 @@ export const ACHIEVEMENTS: AchievementDef[] = [
     description: 'Finish 10 separate calendar days with ending equity higher than that day’s start.',
     icon: '🌿',
     target: 10,
+  },
+  {
+    id: 'curious_mind',
+    title: 'Curious mind',
+    description: 'Ask the AI Coach a question to expand your market knowledge.',
+    icon: '🧠',
+  },
+  {
+    id: 'price_setter',
+    title: 'Price setter',
+    description: 'Successfully fill a Limit Order (buy or sell) at your chosen price.',
+    icon: '🎯',
   },
 ]
 

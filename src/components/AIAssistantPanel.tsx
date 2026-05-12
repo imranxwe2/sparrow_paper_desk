@@ -2,6 +2,8 @@ import { useRef, useState } from 'react'
 import { usePaper } from '../context/PaperTradingContext'
 import { getAssistantReply } from '../lib/aiAssistant'
 
+import { useAchievements } from '../context/AchievementsContext'
+
 type Msg = { role: 'user' | 'assistant'; text: string }
 
 const INITIAL: Msg = {
@@ -17,6 +19,7 @@ const suggestions = [
 
 export function AIAssistantPanel() {
   const { snapshot } = usePaper()
+  const { unlockAchievement } = useAchievements()
   const [messages, setMessages] = useState<Msg[]>([INITIAL])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -26,10 +29,15 @@ export function AIAssistantPanel() {
     const t = (text ?? input).trim()
     if (!t || loading) return
     setInput('')
-    setMessages((m) => [...m, { role: 'user', text: t }])
+    
+    // Unlock achievement on first sent message
+    unlockAchievement('curious_mind')
+    
+    const newMessages: Msg[] = [...messages, { role: 'user', text: t }]
+    setMessages(newMessages)
     setLoading(true)
     try {
-      const reply = await getAssistantReply(t, snapshot)
+      const reply = await getAssistantReply(newMessages, snapshot)
       setMessages((m) => [...m, { role: 'assistant', text: reply }])
     } finally {
       setLoading(false)

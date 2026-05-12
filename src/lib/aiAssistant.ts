@@ -1,4 +1,5 @@
 import type { PaperSnapshot } from '../context/PaperTradingContext'
+import { supabase, supabaseConfigured } from './supabase'
 
 function formatMoney(n: number): string {
   return n.toLocaleString(undefined, {
@@ -30,10 +31,41 @@ function portfolioSummary(s: PaperSnapshot): string {
 
 const lower = (t: string) => t.toLowerCase()
 
+export type ChatMessage = { role: 'user' | 'assistant'; text: string }
+
 export async function getAssistantReply(
-  userMessage: string,
+  messages: ChatMessage[],
   snapshot: PaperSnapshot,
 ): Promise<string> {
+  // If Supabase is configured, try the Edge Function first
+  if (supabaseConfigured && supabase) {
+    try {
+      const { data, error } = await supabase.functions.invoke('coach', {
+        body: { messages, snapshot }
+      })
+      if (!error && data?.reply) {
+        return data.reply
+      }
+      
+      // Try to extract the real error message if it's a 400
+      let errorMessage = error?.message || 'Unknown error'
+      if (error && (error as any).context && typeof (error as any).context.json === 'function') {
+        try {
+          const errBody = await (error as any).context.json()
+          if (errBody?.error) errorMessage = errBody.error
+        } catch (_) { }
+      }
+      
+      console.warn('Edge function returned error:', errorMessage)
+      return `[Backend Error] ${errorMessage}`
+    } catch (err: any) {
+      console.warn('Failed to reach LLM coach.', err)
+      return `[Backend Error] ${err.message}`
+    }
+  }
+
+  // Fallback to local regex-based logic if no connection or no API key set
+  const userMessage = messages[messages.length - 1].text
   await new Promise((r) => setTimeout(r, 450 + Math.random() * 400))
 
   const msg = lower(userMessage)
