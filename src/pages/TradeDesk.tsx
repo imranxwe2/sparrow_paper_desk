@@ -4,6 +4,8 @@ import { usePaper } from '../context/PaperTradingContext'
 import { buyFeeForOrder, sellFeeForOrder } from '../lib/paperFees'
 import { quoteBookAtTick, SYMBOLS } from '../lib/mockMarket'
 import type { OutletContextType } from '../components/Layout'
+import { PostMortemModal } from '../components/PostMortemModal'
+import type { LedgerRow } from '../context/PaperTradingContext'
 
 function formatMoney(n: number): string {
   return n.toLocaleString(undefined, {
@@ -45,6 +47,7 @@ export default function TradeDesk() {
   } = usePaper()
   
   const { flash, watchlist, setWatchlist } = useOutletContext<OutletContextType>()
+  const [selectedTrade, setSelectedTrade] = useState<LedgerRow | null>(null)
 
   const [symbol, setSymbol] = useState(SYMBOLS[0].symbol)
   const [qty, setQty] = useState('10')
@@ -102,6 +105,10 @@ export default function TradeDesk() {
     }
     return out
   }, [tick])
+
+  const lastClosedTradeForSymbol = useMemo(() => {
+    return snapshot.ledger.find(r => r.symbol === symbol && r.side === 'SELL') || null
+  }, [snapshot.ledger, symbol])
 
   const onMarketBuy = useCallback(() => {
     const r = buy(symbol, qtyNum)
@@ -323,6 +330,19 @@ export default function TradeDesk() {
               </>
             )}
           </div>
+          
+          {lastClosedTradeForSymbol && (
+            <div className="mt-6 border-t border-sparrow-100 pt-5">
+              <p className="text-xs text-sparrow-500 mb-3">You recently closed a paper trade for {symbol}.</p>
+              <button
+                type="button"
+                onClick={() => setSelectedTrade(lastClosedTradeForSymbol)}
+                className="w-full rounded-xl border border-flame-200 bg-flame-50/50 px-6 py-3 text-sm font-semibold text-flame-800 shadow-sm transition hover:border-flame-300 hover:bg-flame-100"
+              >
+                AI Trade Post-Mortem
+              </button>
+            </div>
+          )}
         </div>
         
         <div className="rounded-2xl border border-sparrow-200 bg-white p-4 shadow-sm ring-1 ring-flame-500/5">
@@ -429,6 +449,7 @@ export default function TradeDesk() {
           </div>
         </div>
       </div>
+      <PostMortemModal row={selectedTrade} onClose={() => setSelectedTrade(null)} />
     </div>
   )
 }

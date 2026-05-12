@@ -33,10 +33,52 @@ const lower = (t: string) => t.toLowerCase()
 
 export type ChatMessage = { role: 'user' | 'assistant'; text: string }
 
+async function invokeGeminiDirectly(messages: ChatMessage[], snapshot: PaperSnapshot, key: string): Promise<string> {
+  const systemInstruction = `You are Sparrow, a helpful, highly knowledgeable practice trading coach for a paper trading app.
+You are helping a beginner learn how to trade. Keep your answers concise, practical, and friendly. DO NOT give financial advice.
+CRITICAL: DO NOT use markdown formatting like asterisks, bolding, or lists. Use plain text only. Use standard newlines for spacing.
+The user is currently looking at their paper trading desk. Here is their current portfolio snapshot:
+${JSON.stringify({
+  cash: snapshot.cash,
+  openPositions: Object.entries(snapshot.positions).filter(([_, p]) => p.qty > 0).map(([sym, p]) => ({ symbol: sym, qty: p.qty, avgCost: p.avgCost }))
+})}
+
+Answer the user's question based on this context.`
+
+  const contents = messages.map((m) => ({
+    role: m.role === 'assistant' ? 'model' : 'user',
+    parts: [{ text: m.text }]
+  }))
+
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: systemInstruction }] },
+      contents,
+      generationConfig: { temperature: 0.7, maxOutputTokens: 300 }
+    })
+  })
+  
+  const data = await response.json()
+  if (data.error) throw new Error(data.error.message)
+  return data.candidates[0].content.parts[0].text
+}
+
 export async function getAssistantReply(
   messages: ChatMessage[],
   snapshot: PaperSnapshot,
 ): Promise<string> {
+  // Temporary local override
+  const localKey = import.meta.env.VITE_GEMINI_API_KEY
+  if (localKey) {
+    try {
+      return await invokeGeminiDirectly(messages, snapshot, localKey)
+    } catch (err: any) {
+      return `[Local API Error] ${err.message}`
+    }
+  }
+
   // If Supabase is configured, try the Edge Function first
   if (supabaseConfigured && supabase) {
     try {
@@ -112,4 +154,60 @@ export async function getAssistantReply(
   }
 
   return `I can explain paper mechanics, orders, risk ideas, or read back your portfolio. Try asking: "How do I size a buy?" or "What is my exposure?" Snapshot: ${summary}`
+}
+
+export async function getTradePostMortem(
+  row: any,
+  snapshot: PaperSnapshot,
+): Promise<string> {
+  const pnl = row.total - ((row.avgCostAtSell ?? 0) * row.qty)
+
+  // Temporary local override
+  const localKey = import.meta.env.VITE_GEMINI_API_KEY
+  if (localKey) {
+    try {
+      const messages: ChatMessage[] = [{
+        role: 'user',
+        text: `I just closed a paper trade: SOLD ${row.qty} shares of ${row.symbol} at $${row.price}. My P&L for this trade was $${pnl.toFixed(2)}. Analyze this trade in exactly 1 or 2 short sentences and give me direct feedback.`
+      }]
+      return await invokeGeminiDirectly(messages, snapshot, localKey)
+    } catch (err: any) {
+      return `[Local API Error] ${err.message}`
+    }
+  }
+
+  if (supabaseConfigured && supabase) {
+    try {
+      const messages = [{
+        role: 'user',
+        text: `I just closed a paper trade: SOLD ${row.qty} shares of ${row.symbol} at $${row.price}. My P&L for this trade was $${pnl.toFixed(2)}. Analyze this trade in exactly 1 or 2 short sentences and give me direct feedback.`
+      }]
+      const { data, error } = await supabase.functions.invoke('coach', {
+        body: { messages, snapshot }
+      })
+      if (!error && data?.reply) {
+        return data.reply
+      }
+      
+      let errorMessage = error?.message || 'Unknown error'
+      if (error && (error as any).context && typeof (error as any).context.json === 'function') {
+        try {
+          const errBody = await (error as any).context.json()
+          if (errBody?.error) errorMessage = errBody.error
+        } catch (_) { }
+      }
+      
+      console.warn('Edge function returned error:', errorMessage)
+      return `[Backend Error] ${errorMessage}`
+    } catch (err: any) {
+      console.warn('Failed to reach LLM coach.', err)
+      return `[Backend Error] ${err.message}`
+    }
+  }
+
+  // Fallback if no Supabase
+  await new Promise((r) => setTimeout(r, 450))
+  return pnl >= 0 
+    ? `Nice work closing this trade in the green for a profit of $${pnl.toFixed(2)}. Make sure your risk was managed well!`
+    : `You took a small loss of $${Math.abs(pnl).toFixed(2)} here. Review your entry criteria to see what you could improve next time.`
 }

@@ -4,8 +4,10 @@ import { useNavigate, useLocation } from 'react-router-dom'
 export const WALKTHROUGH_STEPS = [
   { path: '/trade', target: '#nav-trade, #mobile-nav-trade', title: 'Trade Desk', body: 'This is where you place practice orders and view live quotes.' },
   { path: '/trade', target: '#order-panel', title: 'Place an Order', body: 'Buy or sell stocks here. You can set market orders for immediate fills or limit orders.' },
+  { path: '/trade', target: '#order-panel', title: 'AI Post-Mortem', body: 'After selling a position, an Analyze button will appear here. Click it to get immediate, AI-generated feedback on your completed trade.' },
   { path: '/trade', target: '#live-chart', title: 'Interactive Chart', body: 'Track real-time market data on this chart to see how prices trend.' },
   { path: '/trade', target: '#live-quotes', title: 'Live Quotes', body: 'Click on any symbol here to select it for trading and update the chart.' },
+  { path: '/trade', target: '#news-ticker', title: 'Live News', body: 'Watch this ticker for breaking news events that directly impact stock prices in real-time.' },
   { path: '/portfolio', target: '#nav-portfolio, #mobile-nav-portfolio', title: 'Your Portfolio', body: 'After trading, head here to see your open positions, average costs, and overall performance.' },
   { path: '/coach', target: '#nav-coach, #mobile-nav-coach', title: 'AI Coach', body: 'Ask questions, review trades, or get trading tips from your built-in AI mentor.' },
 ]

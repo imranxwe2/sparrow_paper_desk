@@ -77,7 +77,7 @@ export function AIAssistantPanel() {
             className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}
           >
             <div
-              className={`max-w-[95%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
+              className={`max-w-[95%] whitespace-pre-wrap rounded-2xl px-4 py-3 text-sm leading-relaxed ${
                 m.role === 'user'
                   ? 'bg-gradient-to-br from-flame-600 to-flame-700 text-white shadow-sm'
                   : 'border-l-2 border-flame-400/80 bg-sparrow-50 text-sparrow-700 ring-1 ring-sparrow-100'

@@ -35,8 +35,18 @@ const slides = [
     kicker: 'Risk-Free Practice',
   },
   {
+    title: 'Breaking News Events',
+    body: `Keep an eye on the live news ticker at the bottom of the screen. Simulated breaking news will drop periodically, causing immediate spikes or crashes in stock prices. Learning to trade around volatility is a key part of the experience.`,
+    kicker: 'Market Catalysts',
+  },
+  {
+    title: 'AI Trade Post-Mortems',
+    body: `After you close a position by selling your shares, you can instantly request an AI Trade Post-Mortem. The AI coach will analyze your execution and profit/loss to give you direct feedback on what you did right and what to improve next time.`,
+    kicker: 'Continuous Learning',
+  },
+  {
     title: 'Your Personal AI Coach',
-    body: `If you ever feel lost or want to learn a new financial term, open the AI coach panel. It can review your recent trades, explain your risk habits, and answer questions about the market. Use it to build your financial vocabulary and confidence as you trade.`,
+    body: `If you ever feel lost or want to learn a new financial term, open the AI coach panel. It can explain risk habits, and answer questions about the market. Use it to build your financial vocabulary and confidence as you trade.`,
     kicker: 'Ask in Plain Language',
   },
   {
@@ -127,13 +137,36 @@ function TutorialVisual({ slideIndex }: { slideIndex: number }) {
       )
     case 6:
       return (
+        <div className="flex h-48 w-full flex-col overflow-hidden items-center justify-center rounded-2xl border border-sparrow-200 bg-sparrow-900 shadow-sm relative">
+          <div className="absolute top-1/2 left-0 w-full bg-flame-600 h-10 flex items-center shadow-[0_0_15px_rgba(234,88,12,0.6)]">
+            <div className={`whitespace-nowrap font-mono text-sm font-bold text-white transition-transform duration-[3000ms] ease-linear ${tick % 2 === 0 ? '-translate-x-10' : '-translate-x-32'}`}>
+              BREAKING: TSLA ANNOUNCES NEW AI ROBOTICS PLATFORM... AAPL EARNINGS BEAT EXPECTATIONS... 
+            </div>
+          </div>
+        </div>
+      )
+    case 7:
+      return (
+        <div className="flex h-48 w-full items-center justify-center rounded-2xl border border-sparrow-200 bg-white/50 shadow-sm">
+          <div className={`flex flex-col items-center gap-3 transition-transform duration-500 ${tick % 2 === 0 ? 'scale-105' : 'scale-100'}`}>
+            <div className="rounded-xl border border-sparrow-200 bg-white px-4 py-2 shadow-sm text-sm">
+              <span className="font-bold text-flame-600">SELL AAPL</span> • +$120.50 Profit
+            </div>
+            <div className="rounded-lg bg-sparrow-800 px-4 py-2 text-xs text-white">
+              AI: Nice work closing in the green!
+            </div>
+          </div>
+        </div>
+      )
+    case 8:
+      return (
         <div className="flex h-48 w-full items-center justify-center rounded-2xl border border-sparrow-200 bg-white/50 shadow-sm">
           <div className={`max-w-[200px] rounded-2xl rounded-bl-sm bg-sparrow-800 p-4 text-white shadow-lg transition-transform duration-500 ${tick % 2 === 0 ? '-translate-y-2' : 'translate-y-0'}`}>
             <p className="text-sm">Hi! I'm your AI Coach. Ask me anything about trading.</p>
           </div>
         </div>
       )
-    case 7:
+    case 9:
       return (
         <div className="flex h-48 w-full items-center justify-center rounded-2xl border border-sparrow-200 bg-white/50 shadow-sm">
           <div className={`flex h-20 w-20 items-center justify-center rounded-full transition-all duration-500 ${tick % 2 === 0 ? 'scale-110 bg-green-100' : 'scale-100 bg-green-50'}`}>

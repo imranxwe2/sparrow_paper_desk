@@ -19,7 +19,7 @@ export function NewsTicker() {
   const isPos = currentNews.impact > 1
 
   return (
-    <div className="bg-sparrow-900 text-white overflow-hidden text-xs py-2 flex items-center border-t border-sparrow-800">
+    <div id="news-ticker" className="bg-sparrow-900 text-white overflow-hidden text-xs py-2 flex items-center border-t border-sparrow-800">
       <div className="px-4 font-bold uppercase tracking-wider shrink-0 border-r border-sparrow-700 flex items-center gap-2 text-flame-400">
         <span className="relative flex h-2 w-2">
           <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-flame-400 opacity-75"></span>

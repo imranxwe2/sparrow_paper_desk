@@ -11,27 +11,21 @@ serve(async (req) => {
   }
 
   try {
-    const { messages, snapshot } = await req.json()
+    const { row, snapshot } = await req.json()
     
     const geminiKey = Deno.env.get('GEMINI_API_KEY')
     if (!geminiKey) throw new Error('Missing GEMINI_API_KEY environment variable in Supabase')
 
-    const systemInstruction = `You are Sparrow, a helpful, highly knowledgeable practice trading coach for a paper trading app.
-You are helping a beginner learn how to trade. Keep your answers concise, practical, and friendly. DO NOT give financial advice.
-CRITICAL: DO NOT use markdown formatting like asterisks, bolding, or lists. Use plain text only. Use standard newlines for spacing.
-The user is currently looking at their paper trading desk. Here is their current portfolio snapshot:
-${JSON.stringify({
-  cash: snapshot.cash,
-  openPositions: Object.entries(snapshot.positions).filter(([_, p]) => (p as any).qty > 0).map(([sym, p]) => ({ symbol: sym, qty: (p as any).qty, avgCost: (p as any).avgCost }))
-})}
+    const pnl = row.total - (row.avgCostAtSell * row.qty)
+    const pnlPercent = row.avgCostAtSell > 0 ? (pnl / (row.avgCostAtSell * row.qty)) * 100 : 0
 
-Answer the user's question based on this context.`
-
-    // Format messages for Gemini
-    const contents = messages.map((m: any) => ({
-      role: m.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: m.text }]
-    }))
+    const systemInstruction = `You are a concise AI trading coach. The user just closed a paper trade.
+Analyze the trade in exactly 1 or 2 short sentences. Be direct. DO NOT use formatting. DO NOT give financial advice. Keep it under 40 words to save credits.
+Context:
+- Action: SOLD ${row.qty} shares of ${row.symbol} at $${row.price}.
+- P&L: $${pnl.toFixed(2)} (${pnlPercent.toFixed(2)}%).
+- Current Cash: $${snapshot.cash.toFixed(2)}.
+Tell them one thing they did well or one thing to watch out for based on this outcome.`
 
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`, {
       method: 'POST',
@@ -42,10 +36,13 @@ Answer the user's question based on this context.`
         systemInstruction: {
           parts: [{ text: systemInstruction }]
         },
-        contents: contents,
+        contents: [{
+          role: 'user',
+          parts: [{ text: "Analyze my recent trade." }]
+        }],
         generationConfig: {
-          temperature: 0.7,
-          maxOutputTokens: 300,
+          temperature: 0.5,
+          maxOutputTokens: 100, // Very small to keep it cheap
         }
       })
     })
